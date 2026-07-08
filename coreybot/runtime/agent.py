@@ -34,6 +34,8 @@ from coreybot.llm.protocol import (
 )
 from coreybot.llm.providers import LLMProvider, create_provider
 from coreybot.runtime.session import CLEAR_LABEL, SessionTree, Snapshot
+from coreybot.security import OutboundBlocked, SecurityContext
+from coreybot.security.journal import WorkspaceJournal
 from coreybot.tools import ToolRegistry, get_registry
 
 
@@ -138,13 +140,28 @@ class Agent:
         registry: Optional[ToolRegistry] = None,
         max_steps: int = 6,
         session_saver: "Optional[Callable[[SessionTree], None]]" = None,
+        security: Optional[SecurityContext] = None,
     ) -> None:
         self.config = config
         self.provider = provider if provider is not None else create_provider(config)
         self.registry = registry if registry is not None else get_registry()
         self.max_steps = max_steps
+        # Security context (user info + secret store + outbound rule
+        # pipeline). Optional so non-enterprise callers are unaffected; the
+        # user-info block (never secrets) is folded into the system prompt.
+        self.security = security
+        # Pending workspace rollback data captured by the safety policy for
+        # the current turn; folded into the next snapshot so the committed
+        # session node becomes a restore point (see _snapshot / _run_tool).
+        self._pending_artifacts: dict = {}
+        self._last_safety_reason: str = ""
+        base_prompt = config.system_prompt
+        if security is not None:
+            user_block = security.system_prompt_block()
+            if user_block:
+                base_prompt = f"{base_prompt}\n\n{user_block}"
         self.system_prompt = build_system_prompt(
-            config.system_prompt, self.registry.render_for_prompt()
+            base_prompt, self.registry.render_for_prompt()
         )
         self.history: List[Message] = [Message.system(self.system_prompt)]
         # Append-only session telemetry: every emitted AgentEvent, across all
@@ -175,6 +192,7 @@ class Agent:
         """
         self.history = [Message.system(self.system_prompt)]
         self.telemetry = []
+        self._pending_artifacts = {}
         self.sessions.new_root(self._snapshot(), label=CLEAR_LABEL)
         self._persist_sessions()
 
@@ -189,6 +207,7 @@ class Agent:
         return Snapshot(
             history=list(self.history),
             telemetry=list(self.telemetry),
+            artifacts=dict(self._pending_artifacts),
         )
 
     def _persist_sessions(self) -> None:
@@ -218,39 +237,71 @@ class Agent:
         self._persist_sessions()
 
     def restore_workspace(self, node_id: str, actor: str = "main") -> int:
-        """Restore the session AND the on-disk workspace at ``node_id``.
+        """Restore the session AND roll the on-disk workspace back to ``node_id``.
 
         This is the wider, more dangerous sibling of :meth:`checkout_session`:
-        besides the conversation it re-applies the file state captured in the
-        node's ``snapshot.artifacts`` (edited-file blobs under ``"files"`` and
-        deletion tombstones under ``"deleted"``). Snapshots do not yet capture
-        files, so today ``artifacts`` is empty and only the session is
-        restored -- but the scope is deliberately kept SEPARATE from a plain
-        session restore so the UI never conflates "rewind the chat" with
-        "rewind my files". Returns the number of workspace artifacts applied
-        (0 until file capture lands), so a caller can report what happened.
+        besides rewinding the conversation it *undoes* every workspace write made
+        after ``node_id``. Each committed node carries, in ``snapshot.artifacts``,
+        the pre-write originals captured by the safety policy during that turn
+        (``"files"`` = original text to restore, ``"deleted"`` = paths that did
+        not exist yet and must be removed). To reach ``node_id`` we walk the
+        nodes strictly between the current head and ``node_id`` and apply their
+        captured originals newest-first, which reproduces the on-disk state as of
+        ``node_id`` byte-for-byte. Returns the number of file operations applied.
+
+        The scope is deliberately kept SEPARATE from a plain session restore so
+        the UI never conflates "rewind the chat" with "rewind my files".
         """
+        head_before = self.sessions.head(actor)
         self.checkout_session(node_id, actor=actor)
-        node = self.sessions.get(node_id)
-        if node is None:
+        target = self.sessions.get(node_id)
+        if target is None:
             return 0
-        artifacts = getattr(node.snapshot, "artifacts", None) or {}
-        files = artifacts.get("files") or {}
-        deleted = artifacts.get("deleted") or []
+
         applied = 0
-        for path, blob in files.items():
-            try:
-                with open(path, "w", encoding="utf-8", newline="") as handle:
-                    handle.write(blob)
-                applied += 1
-            except OSError:
-                pass
-        for path in deleted:
-            try:
-                os.remove(path)
-                applied += 1
-            except OSError:
-                pass
+        restored: set = set()
+        removed: set = set()
+
+        def _apply(artifacts) -> None:
+            nonlocal applied
+            files = (artifacts or {}).get("files") or {}
+            deleted = (artifacts or {}).get("deleted") or []
+            for path, blob in files.items():
+                if path in restored:
+                    continue
+                try:
+                    with open(path, "w", encoding="utf-8", newline="") as handle:
+                        handle.write(blob)
+                    restored.add(path)
+                    applied += 1
+                except OSError:
+                    pass
+            for path in deleted:
+                if path in removed:
+                    continue
+                removed.add(path)
+                try:
+                    os.remove(path)
+                    applied += 1
+                except OSError:
+                    pass
+
+        # (1) Apply the target node's OWN artifacts -- the state to reproduce at
+        # this node (the long-standing restore contract).
+        _apply(getattr(target.snapshot, "artifacts", None))
+
+        # (2) Undo writes recorded by the turns AFTER the target on the old line.
+        # The safety policy stores each turn's pre-write originals on that turn's
+        # node, so replaying them newest-first rewinds the workspace to the target.
+        path_ids = [n.id for n in self.sessions.path(head_before)]
+        if node_id in path_ids:
+            tail = path_ids[path_ids.index(node_id) + 1:]
+        else:
+            tail = path_ids  # different branch: undo the whole old line
+        for nid in reversed(tail):
+            node = self.sessions.get(nid)
+            if node is not None:
+                _apply(getattr(node.snapshot, "artifacts", None))
         return applied
 
     async def arun_turn(
@@ -275,7 +326,11 @@ class Agent:
         response = await self._drive(on_event, cancel_token)
         self._emit(on_event, AgentEvent(kind="turn_end", ok=True, text=response.content))
         # Commit this turn as a restorable node (one commit per user turn).
+        # The snapshot folds in any workspace rollback data captured by the
+        # safety policy this turn; reset the pending bag afterwards so it
+        # attaches to exactly one node.
         self.sessions.commit(self._snapshot(), label=_summarize(user_input))
+        self._pending_artifacts = {}
         self._persist_sessions()
         return response
 
@@ -291,19 +346,60 @@ class Agent:
         if on_event is not None:
             on_event(event)
 
+    def _vet_outbound(self, history: List[Message]) -> List[Message]:
+        """Return a security-vetted copy of ``history`` to send to the LLM.
+
+        With no security context this is the identity (returns the same list).
+        Otherwise every message's content is run through the outbound rule
+        pipeline: redactions produce rewritten copies, while a blocking rule
+        raises :class:`OutboundBlocked` (handled by the caller). The system
+        message is vetted too, so a secret accidentally placed in the prompt
+        is caught. The original ``Message`` objects are never mutated.
+        """
+        if self.security is None:
+            return history
+        vetted: List[Message] = []
+        for message in history:
+            outcome = self.security.vet_outbound(message.content)
+            if outcome.changed:
+                vetted.append(
+                    Message(message.role, outcome.text, dict(message.metadata))
+                )
+            else:
+                vetted.append(message)
+        return vetted
+
     async def _drive(
         self, on_event: Optional[EventHandler], cancel_token: Optional[CancelToken]
     ) -> AgentResponse:
         for _ in range(self.max_steps):
             if cancel_token is not None:
                 cancel_token.raise_if_cancelled()
-            prompt_text = _format_prompt(self.history)
+            # Outbound security seam: vet the exact history about to be sent
+            # to the LLM. Redaction rewrites a *copy* only -- the stored
+            # history is never mutated -- and a blocking rule aborts the turn
+            # with a notice instead of transmitting. The prompt captured into
+            # telemetry is scrubbed too, so secrets never enter the durable
+            # event stream / session rollout even when they are not sent.
+            try:
+                wire_history = self._vet_outbound(self.history)
+            except OutboundBlocked as blocked:
+                notice = f"outbound blocked: {blocked.reason} (rule '{blocked.rule}')"
+                self._emit(on_event, AgentEvent(kind="notice", text=notice))
+                return AgentResponse(
+                    type=ResponseType.MESSAGE,
+                    content="(request blocked by an outbound security rule)",
+                    parse_error=notice,
+                )
+            prompt_text = _format_prompt(wire_history)
+            if self.security is not None:
+                prompt_text = self.security.redact(prompt_text)
             self._emit(
                 on_event,
                 AgentEvent(kind="llm_call", name=self.config.model, text=prompt_text),
             )
             result = await run_cancellable(
-                self.provider.acomplete(self.history, cancel_token), cancel_token
+                self.provider.acomplete(wire_history, cancel_token), cancel_token
             )
             raw_reply = result.text.strip()
             # Persist the model's raw turn so it sees its own structured output.
@@ -339,6 +435,50 @@ class Agent:
             parse_error=notice,
         )
 
+    def _safety_gate(
+        self, name: str, arguments: dict, tool_obj, on_event: Optional[EventHandler]
+    ) -> bool:
+        """Consult the safety policy before executing ``tool_obj``.
+
+        Returns True to proceed, False to refuse. On a recoverable call the
+        pre-execution snapshot is merged into ``_pending_artifacts`` so the
+        turn's commit becomes a rollback point; a partially reversible call is
+        allowed but its compensation note is emitted for the audit trail; an
+        unrecoverable, unapproved call is refused. With no safety policy set,
+        this is a no-op that always proceeds (plain execution).
+        """
+        self._last_safety_reason = ""
+        if self.security is None or self.security.safety is None:
+            return True
+        profile = getattr(tool_obj, "safety", None)
+        decision = self.security.safety.evaluate(name, arguments, profile)
+        # Surface the class + rationale as telemetry (secret-free).
+        self._emit(
+            on_event,
+            AgentEvent(
+                kind="notice",
+                text=(
+                    f"safety[{decision.reversibility.value}] {name}: "
+                    f"{decision.decision} -- {decision.reason}"
+                ),
+            ),
+        )
+        if not decision.allowed:
+            self._last_safety_reason = (
+                f"refused ({decision.reversibility.value}): {decision.reason}"
+            )
+            return False
+        if decision.artifacts:
+            self._pending_artifacts = WorkspaceJournal.merge_artifacts(
+                self._pending_artifacts, decision.artifacts
+            )
+        if decision.compensation:
+            self._emit(
+                on_event,
+                AgentEvent(kind="notice", text=f"compensation: {decision.compensation}"),
+            )
+        return True
+
     async def _run_tool(
         self,
         response: AgentResponse,
@@ -356,6 +496,12 @@ class Agent:
         if tool_obj is None:
             available = ", ".join(self.registry.names()) or "(none)"
             output = f"unknown tool '{name}'. Available tools: {available}"
+            ok = False
+        elif not self._safety_gate(name, arguments, tool_obj, on_event):
+            # The safety policy refused this call (unrecoverable + not
+            # approved). Do not execute; report the refusal back to the model
+            # so it can choose a safer path. No workspace change happened.
+            output = self._last_safety_reason or "blocked by safety policy"
             ok = False
         else:
             # Tools are plain sync callables; run them off the event loop so a

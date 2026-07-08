@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import inspect
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
+
+from coreybot.security.capabilities import SafetyProfile, UNKNOWN_PROFILE
 
 
 @dataclass
@@ -63,6 +65,10 @@ class ToolSpec:
     name: str
     description: str
     parameters: Dict[str, str] = field(default_factory=dict)
+    # Optional safety profile (capabilities + how to make the call
+    # recoverable). Defaults to opaque/unknown so tools that declare nothing
+    # are treated conservatively by the safety policy.
+    safety: SafetyProfile = UNKNOWN_PROFILE
 
     def bind(self, func: Callable[..., Any]) -> "Tool":
         """Attach an implementation ``func`` to this spec, producing a Tool."""
@@ -71,6 +77,7 @@ class ToolSpec:
             description=self.description,
             parameters=dict(self.parameters),
             func=func,
+            safety=self.safety,
         )
 
 
@@ -94,6 +101,7 @@ class Tool:
     description: str
     parameters: Dict[str, str]
     func: Callable[..., Any]
+    safety: SafetyProfile = UNKNOWN_PROFILE
 
     def call(self, arguments: Dict[str, Any]) -> ToolResult:
         """Invoke the tool with ``arguments`` (a dict), capturing failures.
@@ -198,6 +206,7 @@ def tool(
     registry: Optional[ToolRegistry] = None,
     *,
     spec: Optional[ToolSpec] = None,
+    safety: Optional[SafetyProfile] = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator that registers a function as a :class:`Tool`.
 
@@ -226,11 +235,14 @@ def tool(
     if spec is not None:
         if name is not None or description is not None or parameters is not None:
             raise ValueError("pass either spec=... or name/description/parameters, not both")
-        resolved = spec
+        resolved = spec if safety is None else replace(spec, safety=safety)
     else:
         if name is None or description is None:
             raise ValueError("tool() requires name and description (or spec=...)")
-        resolved = ToolSpec(name=name, description=description, parameters=parameters or {})
+        resolved = ToolSpec(
+            name=name, description=description, parameters=parameters or {},
+            safety=safety if safety is not None else UNKNOWN_PROFILE,
+        )
 
     target = registry if registry is not None else _DEFAULT_REGISTRY
 
