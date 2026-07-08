@@ -65,6 +65,16 @@ from .tool import echo
 __all__ = ["SPEC", "echo"]
 ```
 
+## 内置高危工具与安全标注
+
+有副作用的工具必须在 `spec.py` 的 `SPEC` 上声明 `safety=make_profile(...)`，这样 `SafetyPolicy` 才能在执行**前**对调用做可恢复性分级（FULL / PARTIAL / NONE）。未声明 `safety` 的工具默认为不透明，会被保守地归为 NONE。
+
+当前内置的高危工具：
+
+- **`write_file`**（`FS_WRITE`）：工作区内写入判为 **FULL**，执行前快照原文、可字节级回滚；目标落在工作区之外或 `~/.coreybot` 内则降为 NONE。
+- **`bash`**（`EXEC` + `DESTRUCTIVE`）：执行任意 shell 命令。命令命中危险模式（如 `rm -rf`），或在无审批回调的无头环境中，一律判为 **NONE** 并拒绝（YOLO 下唯一的人工闸门）。需要放宽时，给 `SafetyPolicy` 注入 approval handler 即可。
+- **`webtool`**（`NETWORK` + `EXTERNAL_SIDE_EFFECT` + compensation）：HTTP(S) 请求。因为请求可能改变远端状态且本地无法回滚，判为 **PARTIAL**：不阻断执行，但会把 compensation 备注记入审计。
+
 ## 如何本地校验
 
 ```powershell
