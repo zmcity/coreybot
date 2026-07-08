@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.venv314/
+.tmp_pip/
+.pytest_cache/
+tests/.artifacts/
+.env
+# Local runtime / probe leftovers (not part of the project).
+.e2e_home/
+.probe/
+ws_restore_*/
+tests/ws_restore_*/
+*.egg-info/
+# Python build artifacts
+build/
+dist/

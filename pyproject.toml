@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coreybot"
+description = "A from-scratch, minimal-dependency async LLM agent framework (learning project)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "zmcity", email = "xiaohupashu@126.com" }]
+keywords = ["llm", "agent", "tui", "textual", "async"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dynamic = ["version"]
+dependencies = [
+    "textual>=8,<9",
+    "rich>=15,<16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9,<10",
+    "pytest-asyncio>=1,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/zmcity/coreybot"
+Repository = "https://github.com/zmcity/coreybot.git"
+
+[project.scripts]
+coreybot = "coreybot.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "coreybot.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["coreybot*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+coreybot = [".env.example"]

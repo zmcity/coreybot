@@ -1,0 +1,9 @@
+include README.md
+include AGENTS.md
+include pytest.ini
+include requirements.txt
+include requirements-dev.txt
+include coreybot/.env.example
+recursive-include coreybot *.py
+global-exclude __pycache__/*
+global-exclude *.py[cod]

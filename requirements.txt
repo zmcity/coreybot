@@ -1,0 +1,5 @@
+# Runtime dependencies for coreybot (pinned to the versions this project is tested against).
+# The framework core (core/, llm/, runtime/, tools/) is pure standard library;
+# only the frontends (TUI + CLI rendering) need these.
+textual==8.2.8
+rich==15.0.0
