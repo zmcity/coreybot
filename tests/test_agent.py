@@ -7,6 +7,8 @@ without any network.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import pytest
 
 from coreybot.runtime.agent import Agent, AgentEvent
@@ -84,6 +86,69 @@ def test_tool_call_then_message():
     roles = [m.role for m in agent.history]
     assert roles == [Role.SYSTEM, Role.USER, Role.ASSISTANT, Role.USER, Role.ASSISTANT]
     assert "<tool_result" in agent.history[3].content
+
+
+def test_tool_result_carries_execution_log():
+    """A tool_result event carries a structured execution log for the inspector.
+
+    The log records resolution, outcome, output size and real elapsed time so
+    the flow chart's LOG section shows what actually happened.
+    """
+    provider = ScriptedProvider([
+        '<tool_call><name>add</name><arguments>{"a": 2, "b": 3}</arguments></tool_call>',
+        "<message>done</message>",
+    ])
+    events = []
+    agent = Agent(Config(), provider=provider, registry=_registry_with_add())
+    agent.run_turn("add 2 and 3", on_event=events.append)
+
+    result = next(e for e in events if e.kind == "tool_result")
+    assert result.log, "tool_result should carry a log"
+    log = result.log
+    assert "tool: add" in log
+    assert "resolve: found" in log
+    assert "outcome: ok" in log
+    assert "elapsed:" in log and "ms" in log
+
+
+def test_blocked_tool_log_records_safety_decision():
+    """A tool blocked by the safety policy logs the decision and skips execution."""
+    from coreybot.security import SecurityContext
+    from coreybot.security.capabilities import Capability, make_profile
+    from coreybot.security.policy import SafetyPolicy
+
+    reg = ToolRegistry()
+    outside = str((Path.cwd().parent / "sibling_should_not_write.txt"))
+
+    @tool(
+        name="writer",
+        description="write a file",
+        parameters={"path": "string -- target"},
+        registry=reg,
+        safety=make_profile(
+            Capability.FS_WRITE,
+            affected_paths=lambda args: [args.get("path", "")],
+        ),
+    )
+    def writer(path):
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        return "wrote"
+
+    provider = ScriptedProvider([
+        '<tool_call><name>writer</name><arguments>{"path": %r}</arguments></tool_call>' % outside,
+        "<message>done</message>",
+    ])
+    events = []
+    security = SecurityContext(safety=SafetyPolicy(workspace_root=str(Path.cwd())))
+    agent = Agent(Config(), provider=provider, registry=reg, security=security)
+    agent.run_turn("write outside", on_event=events.append)
+
+    result = next(e for e in events if e.kind == "tool_result")
+    assert result.ok is False
+    assert "safety: none -> deny" in result.log
+    assert "execution: skipped" in result.log
+    assert not os.path.exists(outside)  # never executed
 
 
 def test_unknown_tool_feeds_error_back():

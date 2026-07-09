@@ -763,24 +763,22 @@ def _format_arguments(arguments: Optional[Dict[str, object]]) -> str:
 
 
 def _tool_log(title: str, event: AgentEvent) -> str:
-    """A short execution LOG for a tool call (status + output size).
+    """The execution LOG for a tool call.
 
-    Today the agent does not emit structured tool logs, so this synthesizes a
-    concise, honest record from the result event. When richer logs are wired
-    later (an ``event.log`` field), append them here.
+    Prefers the agent's structured record (``event.log`` -- resolve/safety/
+    outcome/timing built in ``Agent._run_tool``). Falls back to a minimal
+    status line for events that carry no log (e.g. older telemetry).
     """
+    record = (getattr(event, "log", "") or "").strip()
+    if record:
+        return record
     status = "ok" if event.ok else "failed"
     out = event.output or ""
-    lines = [
+    return "\n".join([
         f"tool: {title}",
         f"status: {status}",
         f"output: {len(out)} chars",
-    ]
-    extra = getattr(event, "log", "") or ""
-    if extra.strip():
-        lines.append("")
-        lines.append(extra.rstrip())
-    return "\n".join(lines)
+    ])
 
 
 def _tool_perf(node: "GraphNode", now: float) -> str:

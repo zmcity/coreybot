@@ -600,6 +600,21 @@ def test_tool_node_is_inspectable_with_output_log_perf():
             assert node.inspectable is False
 
 
+def test_tool_log_section_uses_agent_execution_record():
+    """The LOG section shows the agent's structured record (event.log) verbatim."""
+    record = "tool: calc\nresolve: found\nsafety: full -> allow\noutcome: ok"
+    panel = FlowPanel()
+    _project(panel, [
+        AgentEvent(kind="turn_start", name="user", text="hi"),
+        AgentEvent(kind="tool_call", name="calc", arguments={"expression": "2+2"}),
+        AgentEvent(kind="tool_result", name="calc", ok=True, output="4", log=record),
+        AgentEvent(kind="turn_end", ok=True, text="done"),
+    ])
+    tool = next(n for n in panel.nodes() if n.source == Source.TOOL)
+    sections = dict(tool.inspect_sections())
+    assert sections["LOG"] == record
+
+
 async def test_open_inspector_posts_message():
     """open_inspector emits an InspectRequested carrying the sections."""
     messages = []

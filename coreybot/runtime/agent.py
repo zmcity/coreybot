@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -86,6 +87,10 @@ class AgentEvent:
     output: str = ""
     ok: bool = True
     text: str = ""
+    # Optional structured execution record (e.g. for a tool_result): safety
+    # decision, timing, and outcome. Surfaced verbatim in the flow inspector's
+    # LOG section; empty for events that carry no log.
+    log: str = ""
 
     def __post_init__(self) -> None:
         if not self.source:
@@ -155,6 +160,7 @@ class Agent:
         # session node becomes a restore point (see _snapshot / _run_tool).
         self._pending_artifacts: dict = {}
         self._last_safety_reason: str = ""
+        self._last_safety_note: str = ""
         base_prompt = config.system_prompt
         if security is not None:
             user_block = security.system_prompt_block()
@@ -448,10 +454,17 @@ class Agent:
         this is a no-op that always proceeds (plain execution).
         """
         self._last_safety_reason = ""
+        self._last_safety_note = ""
         if self.security is None or self.security.safety is None:
             return True
         profile = getattr(tool_obj, "safety", None)
         decision = self.security.safety.evaluate(name, arguments, profile)
+        # Keep a compact, secret-free note for the tool's execution log
+        # (recorded whether the call is allowed or refused).
+        self._last_safety_note = (
+            f"safety: {decision.reversibility.value} -> {decision.decision}"
+            f" ({decision.reason})"
+        )
         # Surface the class + rationale as telemetry (secret-free).
         self._emit(
             on_event,
@@ -492,29 +505,57 @@ class Agent:
             AgentEvent(kind="tool_call", name=name, arguments=arguments),
         )
 
+        log_lines: List[str] = [f"tool: {name or '(unnamed)'}"]
+        error: Optional[str] = None
+        elapsed_ms: Optional[float] = None
+
         tool_obj = self.registry.get(name)
         if tool_obj is None:
             available = ", ".join(self.registry.names()) or "(none)"
             output = f"unknown tool '{name}'. Available tools: {available}"
             ok = False
+            log_lines.append("resolve: not found in registry")
         elif not self._safety_gate(name, arguments, tool_obj, on_event):
             # The safety policy refused this call (unrecoverable + not
             # approved). Do not execute; report the refusal back to the model
             # so it can choose a safer path. No workspace change happened.
             output = self._last_safety_reason or "blocked by safety policy"
             ok = False
+            log_lines.append("resolve: found")
+            if self._last_safety_note:
+                log_lines.append(self._last_safety_note)
+            log_lines.append("execution: skipped (blocked by safety policy)")
         else:
+            log_lines.append("resolve: found")
+            if self._last_safety_note:
+                log_lines.append(self._last_safety_note)
             # Tools are plain sync callables; run them off the event loop so a
             # slow tool neither blocks the UI nor ignores cancellation.
+            started = time.monotonic()
             outcome = await run_cancellable(
                 asyncio.to_thread(tool_obj.call, arguments), cancel_token
             )
+            elapsed_ms = (time.monotonic() - started) * 1000.0
             output = outcome.output
             ok = outcome.ok
+            error = outcome.error
+
+        log_lines.append(f"outcome: {'ok' if ok else 'failed'}")
+        if error:
+            log_lines.append(f"error: {error}")
+        log_lines.append(f"output: {len(output or '')} chars")
+        if elapsed_ms is not None:
+            log_lines.append(f"elapsed: {elapsed_ms:.1f} ms")
 
         self._emit(
             on_event,
-            AgentEvent(kind="tool_result", name=name, output=output, ok=ok),
+            AgentEvent(
+                kind="tool_result",
+                name=name,
+                output=output,
+                ok=ok,
+                log="\n".join(log_lines),
+            ),
         )
         # Feed the observation back as a user turn the model will read next.
         observation = _format_tool_result(name, output, ok)
