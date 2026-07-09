@@ -66,6 +66,12 @@ def webtool(
     request = urllib.request.Request(
         url, data=body_bytes, method=resolved_method, headers={"User-Agent": _USER_AGENT}
     )
+    log_lines = [
+        f"method: {resolved_method}",
+        f"url: {url}",
+        f"timeout: {seconds:g}s",
+        f"request body: {len(body_bytes) if body_bytes is not None else 0} bytes",
+    ]
     try:
         with urllib.request.urlopen(request, timeout=seconds) as response:
             raw = response.read(_MAX_BODY_CHARS * 4)
@@ -75,14 +81,30 @@ def webtool(
         # An HTTP error status is still a completed request; report it.
         detail = exc.read(_MAX_BODY_CHARS * 4) if hasattr(exc, "read") else b""
         text = detail.decode("utf-8", errors="replace")[:_MAX_BODY_CHARS]
-        return ToolResult.failure(f"HTTP {exc.code} {exc.reason}\n{text}".rstrip())
+        log_lines.append(f"status: {exc.code} {exc.reason}")
+        log_lines.append("result: http error")
+        return ToolResult.failure(
+            f"HTTP {exc.code} {exc.reason}\n{text}".rstrip(), log="\n".join(log_lines)
+        )
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        return ToolResult.failure(f"request failed: {exc}")
+        log_lines.append(f"result: request failed ({exc})")
+        return ToolResult.failure(
+            f"request failed: {exc}", log="\n".join(log_lines)
+        )
 
     text = raw.decode("utf-8", errors="replace")
-    if len(text) > _MAX_BODY_CHARS:
+    truncated = len(text) > _MAX_BODY_CHARS
+    if truncated:
         text = text[:_MAX_BODY_CHARS] + "\n... (body truncated)"
+    log_lines.append(f"status: {status}")
+    if header_summary:
+        log_lines.append(f"headers: {header_summary}")
+    log_lines.append(f"body: {len(text)} chars")
+    if truncated:
+        log_lines.append(f"body truncated at {_MAX_BODY_CHARS} chars")
     head = f"HTTP {status} {resolved_method} {url}"
     if header_summary:
         head += f"\n{header_summary}"
-    return ToolResult.success(f"{head}\n\n{text}".rstrip())
+    return ToolResult.success(
+        f"{head}\n\n{text}".rstrip(), log="\n".join(log_lines)
+    )

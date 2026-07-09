@@ -111,6 +111,31 @@ def test_tool_result_carries_execution_log():
     assert "elapsed:" in log and "ms" in log
 
 
+def test_tool_provided_log_is_folded_into_the_record():
+    """A tool's own ToolResult.log is appended to the agent's execution record."""
+    from coreybot.tools import ToolResult
+
+    reg = ToolRegistry()
+
+    @tool(name="probe", description="probe", parameters={}, registry=reg)
+    def probe():
+        return ToolResult.success("out", log="exit code: 0\nstdout: 3 chars")
+
+    provider = ScriptedProvider([
+        "<tool_call><name>probe</name><arguments>{}</arguments></tool_call>",
+        "<message>done</message>",
+    ])
+    events = []
+    agent = Agent(Config(), provider=provider, registry=reg)
+    agent.run_turn("probe", on_event=events.append)
+
+    log = next(e for e in events if e.kind == "tool_result").log
+    assert "tool: probe" in log          # generic agent record
+    assert "outcome: ok" in log
+    assert "exit code: 0" in log         # tool-provided detail folded in
+    assert "stdout: 3 chars" in log
+
+
 def test_blocked_tool_log_records_safety_decision():
     """A tool blocked by the safety policy logs the decision and skips execution."""
     from coreybot.security import SecurityContext

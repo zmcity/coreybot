@@ -53,6 +53,15 @@ def test_workdir_is_respected(local_tmp_path):
     assert local_tmp_path.name in result.output
 
 
+def test_bash_result_carries_execution_log():
+    result = run_bash(f'{sys.executable} -c "print(1)"')
+    assert result.ok
+    log = result.log
+    assert "exit code: 0" in log
+    assert "workdir:" in log
+    assert "stdout:" in log and "stderr:" in log
+
+
 def test_bash_spec_declares_exec_and_destructive():
     assert SPEC.name == "bash"
     assert SPEC.safety.has(Capability.EXEC)

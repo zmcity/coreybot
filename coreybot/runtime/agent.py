@@ -508,6 +508,7 @@ class Agent:
         log_lines: List[str] = [f"tool: {name or '(unnamed)'}"]
         error: Optional[str] = None
         elapsed_ms: Optional[float] = None
+        tool_log: str = ""
 
         tool_obj = self.registry.get(name)
         if tool_obj is None:
@@ -539,6 +540,7 @@ class Agent:
             output = outcome.output
             ok = outcome.ok
             error = outcome.error
+            tool_log = (getattr(outcome, "log", "") or "").strip()
 
         log_lines.append(f"outcome: {'ok' if ok else 'failed'}")
         if error:
@@ -546,6 +548,9 @@ class Agent:
         log_lines.append(f"output: {len(output or '')} chars")
         if elapsed_ms is not None:
             log_lines.append(f"elapsed: {elapsed_ms:.1f} ms")
+        if tool_log:
+            log_lines.append("")
+            log_lines.append(tool_log)
 
         self._emit(
             on_event,

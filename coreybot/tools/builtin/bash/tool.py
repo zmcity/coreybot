@@ -43,6 +43,11 @@ def run_bash(
         return ToolResult.failure("timeout must be positive")
     seconds = min(seconds, _HARD_MAX_TIMEOUT)
 
+    log_lines = [
+        f"command: {len(command)} chars",
+        f"workdir: {workdir or '(cwd)'}",
+        f"timeout: {seconds:g}s",
+    ]
     try:
         completed = subprocess.run(
             command,
@@ -53,14 +58,29 @@ def run_bash(
             timeout=seconds,
         )
     except subprocess.TimeoutExpired:
-        return ToolResult.failure(f"command timed out after {seconds:g}s")
+        log_lines.append(f"result: timed out after {seconds:g}s")
+        return ToolResult.failure(
+            f"command timed out after {seconds:g}s", log="\n".join(log_lines)
+        )
     except OSError as exc:
-        return ToolResult.failure(f"could not run command: {exc}")
+        log_lines.append(f"result: could not run ({exc})")
+        return ToolResult.failure(
+            f"could not run command: {exc}", log="\n".join(log_lines)
+        )
 
-    output = (completed.stdout or "") + (completed.stderr or "")
-    if len(output) > _MAX_OUTPUT_CHARS:
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
+    output = stdout + stderr
+    truncated = len(output) > _MAX_OUTPUT_CHARS
+    if truncated:
         output = output[:_MAX_OUTPUT_CHARS] + "\n... (output truncated)"
+    log_lines.append(f"exit code: {completed.returncode}")
+    log_lines.append(f"stdout: {len(stdout)} chars")
+    log_lines.append(f"stderr: {len(stderr)} chars")
+    if truncated:
+        log_lines.append(f"output truncated at {_MAX_OUTPUT_CHARS} chars")
+    log = "\n".join(log_lines)
     report = f"exit code: {completed.returncode}\n{output}".rstrip()
     if completed.returncode == 0:
-        return ToolResult.success(report)
-    return ToolResult.failure(report)
+        return ToolResult.success(report, log=log)
+    return ToolResult.failure(report, log=log)

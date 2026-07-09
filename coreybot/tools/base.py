@@ -31,19 +31,23 @@ class ToolResult:
 
     ``output`` is the text shown back to the model. ``ok`` distinguishes success
     from failure so the loop/UI can label it, and ``error`` carries the reason.
+    ``log`` is an optional, secret-free execution record (e.g. an exit code or
+    HTTP status) that the agent folds into the tool's telemetry log for the
+    flow inspector; it is never shown to the model.
     """
 
     output: str
     ok: bool = True
     error: Optional[str] = None
+    log: str = ""
 
     @classmethod
-    def success(cls, output: str) -> "ToolResult":
-        return cls(output=output, ok=True)
+    def success(cls, output: str, log: str = "") -> "ToolResult":
+        return cls(output=output, ok=True, log=log)
 
     @classmethod
-    def failure(cls, error: str) -> "ToolResult":
-        return cls(output=error, ok=False, error=error)
+    def failure(cls, error: str, log: str = "") -> "ToolResult":
+        return cls(output=error, ok=False, error=error, log=log)
 
 
 @dataclass(frozen=True)

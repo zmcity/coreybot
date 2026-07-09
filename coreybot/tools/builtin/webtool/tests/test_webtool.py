@@ -116,6 +116,17 @@ def test_url_error_is_reported(monkeypatch):
     assert "request failed" in result.output
 
 
+def test_webtool_result_carries_execution_log(monkeypatch):
+    captured = {}
+    _install_fake(monkeypatch, captured, _FakeResponse(b"hello", headers={"Content-Type": "text/plain"}))
+    result = webtool("https://example.com/data")
+    assert result.ok
+    log = result.log
+    assert "method: GET" in log
+    assert "status: 200" in log
+    assert "body:" in log
+
+
 def test_webtool_spec_declares_network_and_side_effect():
     assert SPEC.name == "webtool"
     assert SPEC.safety.has(Capability.NETWORK)
