@@ -1,4 +1,4 @@
-"""The ``calc`` builtin tool (safe arithmetic).
+"""The ``calc`` builtin tool (algebra/scientific calculator, backed by SymPy).
 
 Importing this package registers the tool via ``tool.py``. The interface
 (``SPEC``) and the function are re-exported for convenient inspection/testing:

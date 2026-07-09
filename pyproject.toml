@@ -24,6 +24,7 @@ dynamic = ["version"]
 dependencies = [
     "textual>=8,<9",
     "rich>=15,<16",
+    "sympy>=1.13,<2",
 ]
 
 [project.optional-dependencies]

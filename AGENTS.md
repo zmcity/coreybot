@@ -6,8 +6,12 @@ learning project. Keep changes surgical and consistent with the existing style.
 ## Environment (must follow)
 - Python venv only: run everything via `.\.venv\Scripts\python.exe` (official
   Python 3.14, Textual 8.x). Do **not** use system/Anaconda Python.
-- Network is restricted and approvals are off: you **cannot** `pip install`. Work
-  with what is already installed. There is no lint tool configured.
+- Dependencies: the venv has `textual`/`rich` and now **`sympy`** (used by the
+  `calc` builtin's algebra engine) plus its `mpmath` dep. `pip install` may or
+  may not work depending on the sandbox/network of the run -- prefer working
+  with what is installed, and if you must add a dependency, pin it in
+  `requirements.txt` and declare it in `pyproject.toml`. There is no lint tool
+  configured (only the builtin-conventions pytest gate).
 - Tests: `.\.venv\Scripts\python.exe -m pytest -q` (config in `pytest.ini`,
   asyncio auto mode, marker `integration`). The suite takes ~10-13s; give pytest a
   generous timeout (60000ms+) when a runner default would cut it off.
