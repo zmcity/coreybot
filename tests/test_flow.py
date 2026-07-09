@@ -600,6 +600,31 @@ def test_tool_node_is_inspectable_with_output_log_perf():
             assert node.inspectable is False
 
 
+def test_tool_input_section_lists_all_arguments_friendly():
+    """The INPUT section lists every argument; dict values render as k=v, k=v.
+
+    For calc this surfaces the algebra context -- expression plus optional
+    variables and mode -- with the variables dict shown compactly rather than
+    as a Python repr.
+    """
+    panel = FlowPanel()
+    _project(panel, [
+        AgentEvent(kind="turn_start", name="user", text="algebra"),
+        AgentEvent(kind="tool_call", name="calc", arguments={
+            "expression": "x^2 + y",
+            "variables": {"x": 2, "y": 3},
+            "mode": "numeric",
+        }),
+        AgentEvent(kind="tool_result", name="calc", ok=True, output="7"),
+        AgentEvent(kind="turn_end", ok=True, text="7"),
+    ])
+    tool = next(n for n in panel.nodes() if n.source == Source.TOOL)
+    input_section = dict(tool.inspect_sections())["INPUT"]
+    assert "expression = x^2 + y" in input_section
+    assert "variables = x=2, y=3" in input_section   # compact, no quotes
+    assert "mode = numeric" in input_section
+
+
 def test_tool_log_section_uses_agent_execution_record():
     """The LOG section shows the agent's structured record (event.log) verbatim."""
     record = "tool: calc\nresolve: found\nsafety: full -> allow\noutcome: ok"

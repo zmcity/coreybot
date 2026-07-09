@@ -755,11 +755,27 @@ def _preview(text: str) -> str:
     return line
 
 
+def _format_argument_value(value: object) -> str:
+    """Render one argument value for the INPUT block.
+
+    A mapping (e.g. calc's ``variables={"x": 3}``) reads more clearly as a
+    compact ``k=v, k=v`` list than a Python ``repr`` with quotes; everything
+    else is shown as-is.
+    """
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        return ", ".join(f"{k}={v}" for k, v in value.items())
+    return str(value)
+
+
 def _format_arguments(arguments: Optional[Dict[str, object]]) -> str:
     """Render tool arguments as the INPUT block (one ``key = value`` per line)."""
     if not arguments:
         return ""
-    return "\n".join(f"{key} = {value}" for key, value in arguments.items())
+    return "\n".join(
+        f"{key} = {_format_argument_value(value)}" for key, value in arguments.items()
+    )
 
 
 def _tool_log(title: str, event: AgentEvent) -> str:
