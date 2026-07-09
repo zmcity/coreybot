@@ -147,8 +147,11 @@ class GraphNode:
     parent: Optional[str] = None   # key of the node this one flows from
     kind: str = "step"             # step | user | answer | notice
     expanded: bool = False         # whether the full body is shown
-    full_input: str = ""           # long model INPUT (prompt) for the inspector
+    full_input: str = ""           # long INPUT (model prompt / tool arguments)
     full_response: str = ""        # long model RESPONSE (raw) for the inspector
+    full_output: str = ""          # long tool OUTPUT (result) for the inspector
+    full_log: str = ""             # execution LOG lines for the inspector
+    full_perf: str = ""            # timing / PERF summary for the inspector
     # Wall-clock timing (monotonic seconds). ``started_at`` is stamped when
     # the node enters RUNNING; ``finished_at`` when it settles (ok/fail).
     # A running node has ``finished_at is None`` -> its timer ticks live.
@@ -171,8 +174,20 @@ class GraphNode:
 
     @property
     def inspectable(self) -> bool:
-        """True when this node has long input/response worth a full-screen view."""
-        return bool(self.full_input.strip() or self.full_response.strip())
+        """True when this node has rich detail worth a full-screen view.
+
+        Covers a model call (input + raw response) and a tool call (arguments +
+        output + log + perf). Any populated inspector field makes the node
+        popup-only (see :attr:`expandable`), so one gesture in one place shows
+        the full record instead of an inline expand.
+        """
+        return bool(
+            self.full_input.strip()
+            or self.full_response.strip()
+            or self.full_output.strip()
+            or self.full_log.strip()
+            or self.full_perf.strip()
+        )
 
     @property
     def expandable(self) -> bool:
@@ -187,12 +202,23 @@ class GraphNode:
         return self.collapsible and not self.inspectable
 
     def inspect_sections(self) -> List[tuple]:
-        """Return ``(label, body)`` sections for the inspector modal."""
+        """Return ``(label, body)`` sections for the inspector modal.
+
+        Order is INPUT -> RESPONSE (model) / OUTPUT (tool) -> LOG -> PERF, and
+        only populated sections are included, so a model call shows
+        INPUT/RESPONSE while a tool call shows INPUT/OUTPUT/LOG/PERF.
+        """
         sections: List[tuple] = []
         if self.full_input.strip():
             sections.append(("INPUT", self.full_input.rstrip()))
         if self.full_response.strip():
             sections.append(("RESPONSE", self.full_response.rstrip()))
+        if self.full_output.strip():
+            sections.append(("OUTPUT", self.full_output.rstrip()))
+        if self.full_log.strip():
+            sections.append(("LOG", self.full_log.rstrip()))
+        if self.full_perf.strip():
+            sections.append(("PERF", self.full_perf.rstrip()))
         return sections
 
     def body_rows(self) -> List[str]:
@@ -504,7 +530,12 @@ class FlowPanel(Container):
             detail=_preview(full), full_detail=full,
             status=STATUS_RUNNING, kind="step",
         )
-        self._model[key].started_at = self._clock()
+        node = self._model[key]
+        # The full arguments are the tool INPUT for the inspector (one arg per
+        # line so a long payload reads cleanly in the popup). This also makes
+        # the tool node inspectable -> popup-only, like a model call.
+        node.full_input = _format_arguments(event.arguments)
+        node.started_at = self._clock()
         self._pending_tool = key
         self._ensure_ticking()
 
@@ -516,8 +547,12 @@ class FlowPanel(Container):
         node.finished_at = self._clock()
         out = (event.output or "").strip()
         node.status_text = _preview(out)
-        # Prefer showing the full result as the expandable body.
+        # Prefer showing the full result as the collapsed one-line preview; the
+        # inspector holds the rich detail (OUTPUT / LOG / PERF).
         node.full_detail = out or node.full_detail
+        node.full_output = out
+        node.full_log = _tool_log(node.title, event)
+        node.full_perf = _tool_perf(node, self._clock())
         self._pending_tool = None
 
     def _on_notice(self, event: AgentEvent) -> None:
@@ -718,6 +753,43 @@ def _preview(text: str) -> str:
     if len(line) > 24:
         line = line[:23] + "…"
     return line
+
+
+def _format_arguments(arguments: Optional[Dict[str, object]]) -> str:
+    """Render tool arguments as the INPUT block (one ``key = value`` per line)."""
+    if not arguments:
+        return ""
+    return "\n".join(f"{key} = {value}" for key, value in arguments.items())
+
+
+def _tool_log(title: str, event: AgentEvent) -> str:
+    """A short execution LOG for a tool call (status + output size).
+
+    Today the agent does not emit structured tool logs, so this synthesizes a
+    concise, honest record from the result event. When richer logs are wired
+    later (an ``event.log`` field), append them here.
+    """
+    status = "ok" if event.ok else "failed"
+    out = event.output or ""
+    lines = [
+        f"tool: {title}",
+        f"status: {status}",
+        f"output: {len(out)} chars",
+    ]
+    extra = getattr(event, "log", "") or ""
+    if extra.strip():
+        lines.append("")
+        lines.append(extra.rstrip())
+    return "\n".join(lines)
+
+
+def _tool_perf(node: "GraphNode", now: float) -> str:
+    """A PERF summary for a finished tool call (elapsed wall-clock time)."""
+    seconds = node.duration(now)
+    if seconds is None:
+        return ""
+    return f"elapsed: {_format_duration(seconds)} ({seconds * 1000:.1f} ms)"
+
 
 
 class FlowCanvas(ScrollableContainer):

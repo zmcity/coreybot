@@ -193,9 +193,13 @@ viewed in full:
 - Agent side (`runtime/agent.py`): `llm_call` events carry the rendered prompt
   in `text` (via `_format_prompt(history)`); `llm_result` events carry the raw
   reply in `output` (its `text` stays the short kind label used as node status).
-- Flow model (`flow.py`): `GraphNode` has `full_input` / `full_response`, plus
-  `inspectable` and `inspect_sections()`. `_on_llm_call` stores the prompt,
-  `_on_llm_result` stores the raw reply (also used as the inline expandable body).
+- Flow model (`flow.py`): `GraphNode` has `full_input` / `full_response` /
+  `full_output` / `full_log` / `full_perf`, plus `inspectable` and
+  `inspect_sections()`. `_on_llm_call`/`_on_llm_result` fill the model
+  INPUT + RESPONSE; `_on_tool_call`/`_on_tool_result` fill the tool INPUT
+  (arguments) + OUTPUT (result) + LOG + PERF. BOTH model and tool nodes are
+  therefore inspectable -> popup-only (no inline caret). `inspect_sections()`
+  emits only populated sections in order INPUT, RESPONSE/OUTPUT, LOG, PERF.
 - **Inspectable nodes are popup-only (one gesture, one place).** `node_content`
   appends only the inspect glyph `⤢` (NO inline caret) on an inspectable
   node's header. `FlowCanvas._handle_node_click` opens the inspector on a click
@@ -206,7 +210,9 @@ viewed in full:
   `toggle` / `set_expanded` / `expand_all` all skip inspectable nodes.
 - Modal: `ChatApp.on_flow_panel_inspect_requested` pushes `InspectModal`
   (`ModalScreen`) -- covers ~90% (`width/height: 90%`), shows the labeled
-  `INPUT`/`RESPONSE` in a read-only `TextArea` (scroll + selection), **takes
+  sections (a model call's `INPUT`/`RESPONSE`, a tool call's
+  `INPUT`/`OUTPUT`/`LOG`/`PERF`) in a read-only `TextArea` (scroll +
+  selection), **takes
   focus** (the focus exception above), and has two footer buttons whose
   shortcut is shown in the label -- `Copy (c)` (copies the whole body via
   `App.copy_to_clipboard`) and `Close (Esc)`. Keys `c` / `Esc` / `q` still
@@ -214,10 +220,12 @@ viewed in full:
   BOTTOM-RIGHT corner (the `#inspect-hint` is a flexible `1fr` gap that
   shoves it there) -- the SAME exit spot every modal uses.
 - Guards: tests/test_flow.py -> `test_llm_node_captures_input_and_response`,
-  `test_non_llm_nodes_are_not_inspectable`, `test_open_inspector_posts_message`,
+  `test_tool_node_is_inspectable_with_output_log_perf` (tool nodes ARE
+  inspectable now), `test_open_inspector_posts_message`,
   `test_inspectable_node_shows_button_glyph`,
   `test_inspectable_node_header_has_no_inline_caret`,
-  `test_non_inspectable_node_with_body_still_shows_caret`,
+  `test_non_inspectable_node_with_body_still_shows_caret` (a user node, since
+  tool nodes are inspectable now),
   `test_clicking_inspectable_node_always_opens_inspector_never_toggles`;
   tests/test_tui.py ->
   `test_inspector_modal_opens_takes_focus_and_copies`,

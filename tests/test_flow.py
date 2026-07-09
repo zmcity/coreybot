@@ -168,29 +168,34 @@ def test_notice_auto_expands():
 
 
 def test_toggle_expands_node_and_reflows_neighbors():
-    """Expanding a node grows it and pushes later nodes further down."""
+    """Expanding a node grows it and pushes later nodes further down.
+
+    Uses a user node (inline-expandable): tool/model nodes are popup-only
+    now, so ``toggle`` skips them -- the inline expand/reflow behavior is
+    exercised on a popup-less node with a long body.
+    """
     panel = FlowPanel()
     _project(panel, [
-        AgentEvent(kind="turn_start", name="user", text="hi"),
+        AgentEvent(kind="turn_start", name="user",
+                   text="a deliberately long user message that wraps onto "
+                        "several rows once the node is expanded fully"),
         AgentEvent(kind="tool_call", name="calc", arguments={"expression": "2+2"}),
-        AgentEvent(kind="tool_result", name="calc", ok=True,
-                   output="a deliberately long tool result that wraps onto "
-                          "several rows once the node is expanded fully"),
+        AgentEvent(kind="tool_result", name="calc", ok=True, output="4"),
         AgentEvent(kind="turn_end", ok=True, text="done"),
     ])
-    tool = panel.nodes()[1]
+    user = panel.nodes()[0]
     answer = panel.nodes()[-1]
     y_before = [n.y for n in panel.nodes()]
-    h_tool_before = tool.height
-    # Expanding the tool node (long body) must grow it and shove the answer down.
-    panel.toggle(tool.key)
-    assert panel.nodes()[1].expanded is True
-    assert tool.height > h_tool_before
+    h_user_before = user.height
+    # Expanding the user node (long body) must grow it and shove nodes below down.
+    panel.toggle(user.key)
+    assert panel.nodes()[0].expanded is True
+    assert user.height > h_user_before
     assert answer.y > y_before[-1]             # everything below reflowed down
     # Toggling back restores the original layout (pure function of the model).
-    panel.toggle(tool.key)
+    panel.toggle(user.key)
     assert [n.y for n in panel.nodes()] == y_before
-    assert tool.height == h_tool_before
+    assert user.height == h_user_before
 
 
 def test_set_expanded_and_bulk_helpers():
@@ -202,7 +207,10 @@ def test_set_expanded_and_bulk_helpers():
     panel.set_expanded(keys[0], False)
     assert panel.nodes()[0].expanded is False
     panel.expand_all()
-    assert all(n.expanded for n in panel.nodes() if n.collapsible)
+    # expand_all only opens inline-expandable (popup-less) nodes; inspectable
+    # model/tool nodes are popup-only and stay collapsed.
+    assert all(n.expanded for n in panel.nodes() if n.expandable)
+    assert all(not n.expanded for n in panel.nodes() if n.inspectable)
     panel.collapse_all()
     assert all(not n.expanded for n in panel.nodes())
 
@@ -562,12 +570,33 @@ def test_llm_node_captures_input_and_response():
     assert labels == ["INPUT", "RESPONSE"]
 
 
-def test_non_llm_nodes_are_not_inspectable():
-    """User/answer/tool nodes without long input+response stay non-inspectable."""
+def test_tool_node_is_inspectable_with_output_log_perf():
+    """A tool node captures arguments/output/log/perf and is inspectable.
+
+    Tool bubbles are now popup-only like model calls: the inspector shows
+    INPUT (arguments), OUTPUT (result), LOG (execution record) and PERF
+    (timing). User/answer/notice nodes stay non-inspectable.
+    """
     panel = FlowPanel()
-    _project(panel, _full_turn_events())
+    _project(panel, [
+        AgentEvent(kind="turn_start", name="user", text="calc please"),
+        AgentEvent(kind="tool_call", name="calc",
+                   arguments={"expression": "2 * (3 + 4)"}),
+        AgentEvent(kind="tool_result", name="calc", ok=True, output="14"),
+        AgentEvent(kind="turn_end", ok=True, text="done"),
+    ])
+    tool = next(n for n in panel.nodes() if n.source == Source.TOOL)
+    assert tool.inspectable is True and tool.expandable is False
+    labels = [label for label, _ in tool.inspect_sections()]
+    assert labels == ["INPUT", "OUTPUT", "LOG", "PERF"]
+    sections = dict(tool.inspect_sections())
+    assert "2 * (3 + 4)" in sections["INPUT"]
+    assert sections["OUTPUT"] == "14"
+    assert "status: ok" in sections["LOG"]
+    assert "elapsed" in sections["PERF"]
+    # Non-tool nodes remain non-inspectable.
     for node in panel.nodes():
-        if node.source != Source.LLM:
+        if node.source != Source.TOOL:
             assert node.inspectable is False
 
 
@@ -623,18 +652,21 @@ def test_inspectable_node_header_has_no_inline_caret():
 
 
 def test_non_inspectable_node_with_body_still_shows_caret():
-    """A non-inspectable node with a body keeps its inline expand caret."""
+    """A non-inspectable node with a body keeps its inline expand caret.
+
+    Uses a user node: it has a body and stays non-inspectable, whereas tool
+    nodes are now popup-only (inspectable). The inline expand caret must
+    still appear for popup-less nodes.
+    """
     panel = FlowPanel()
     _project(panel, [
-        AgentEvent(kind="turn_start", name="user", text="hi"),
-        AgentEvent(kind="tool_call", name="calc", arguments={"expression": "2+2"}),
-        AgentEvent(kind="tool_result", name="calc", ok=True,
-                   output="a long tool result that wraps over several rows once expanded"),
+        AgentEvent(kind="turn_start", name="user",
+                   text="a longish user message that has a body to expand"),
         AgentEvent(kind="turn_end", ok=True, text="done"),
     ])
-    tool = next(n for n in panel.nodes() if n.source == Source.TOOL)
-    assert tool.inspectable is False and tool.expandable is True
-    plain = panel.node_content(tool).plain
+    user = next(n for n in panel.nodes() if n.kind == "user")
+    assert user.inspectable is False and user.expandable is True
+    plain = panel.node_content(user).plain
     assert "▸" in plain                 # collapsed caret shown
 
 
